@@ -62,7 +62,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
 
 from backends import (
     CONTENT_ENDPOINTS,
@@ -74,6 +74,7 @@ from backends import (
     parse_rhlw_version,
     security_level_from_name,
 )
+from pom_resolver import resolve_pom
 from schemas import (
     CveDetail,
     EmbargoEntry,
@@ -89,10 +90,14 @@ from schemas import (
     PaginatedPackageVersions,
     PaginatedRemediations,
     PaginatedRepositories,
+    PomResolverResponse,
     Remediation,
     RemediationChange,
+    RemediationMatchResponse,
     RemediationSummary,
     Repository,
+    ResolvedDependency,
+    ResolverSummary,
     SecurityLevel,
     VexReference,
 )
@@ -903,6 +908,94 @@ async def list_embargoes(
 ):
     """Paginated list of embargoed packages. Always empty -- embargo data not available."""
     return PaginatedEmbargoes(count=0, results=[])
+
+
+# ---------------------------------------------------------------------------
+# Routes -- POM Resolver
+# ---------------------------------------------------------------------------
+
+@app.post(
+    f"{PREFIX}/resolve-pom/",
+    response_model=PomResolverResponse,
+    tags=["POM Resolver"],
+    summary="Resolve a Maven POM and identify Lightwell remediations",
+)
+async def resolve_pom_endpoint(pom_file: UploadFile = File(...)):
+    """Accept a Maven POM file, resolve its full transitive dependency tree
+    using Maven, match dependencies against the Lightwell remediation catalog,
+    report CVEs, and return a remediated POM with patched versions pinned.
+
+    Requires Maven and a JDK on the host.
+    """
+    content = await pom_file.read()
+    try:
+        pom_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "POM file must be valid UTF-8 XML.")
+
+    if "<project" not in pom_content:
+        raise HTTPException(400, "Uploaded file does not appear to be a Maven POM.")
+
+    result = await resolve_pom(pom_content)
+
+    if result.error:
+        log.error("POM resolution failed: %s", result.error)
+        raise HTTPException(
+            422,
+            detail={"error": result.error, "summary": "Maven dependency resolution failed."},
+        )
+
+    all_cves: set[str] = set()
+    match_responses: list[RemediationMatchResponse] = []
+    for m in result.matches:
+        all_cves.update(m.cves)
+        match_responses.append(RemediationMatchResponse(
+            group_id=m.dep.group_id,
+            artifact_id=m.dep.artifact_id,
+            original_version=m.dep.version,
+            remediated_version=m.remediated_version,
+            base_version=m.base_version,
+            cves=m.cves,
+            depth=m.dep.depth,
+            scope=m.dep.scope,
+        ))
+
+    dep_responses = [
+        ResolvedDependency(
+            group_id=d.group_id,
+            artifact_id=d.artifact_id,
+            version=d.version,
+            scope=d.scope,
+            dep_type=d.dep_type,
+            depth=d.depth,
+            gav=d.gav,
+        )
+        for d in result.resolved_deps
+    ]
+
+    log.info(
+        "POM resolved: %d deps, %d matched, %d CVEs",
+        result.total_deps, len(result.matches), len(all_cves),
+    )
+    for m in result.matches:
+        how = "direct" if m.dep.depth <= 1 else f"transitive (depth {m.dep.depth})"
+        log.info(
+            "  %s:%s:%s -> %s [%s] (%d CVEs)",
+            m.dep.group_id, m.dep.artifact_id, m.dep.version,
+            m.remediated_version, how, len(m.cves),
+        )
+
+    return PomResolverResponse(
+        summary=ResolverSummary(
+            total_dependencies=result.total_deps,
+            matched=len(result.matches),
+            cves_found=len(all_cves),
+            unmatched=len(result.unmatched_deps),
+        ),
+        matches=match_responses,
+        all_dependencies=dep_responses,
+        remediated_pom=result.remediated_pom,
+    )
 
 
 # ---------------------------------------------------------------------------

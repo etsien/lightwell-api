@@ -160,3 +160,38 @@ class PaginatedCves(BaseModel):
 class PaginatedEmbargoes(BaseModel):
     count: int
     results: list[EmbargoEntry]
+
+
+# ---- POM Resolver models ----
+
+class ResolvedDependency(BaseModel):
+    group_id: str
+    artifact_id: str
+    version: str
+    scope: str
+    dep_type: str
+    depth: int
+    gav: str
+
+class RemediationMatchResponse(BaseModel):
+    group_id: str
+    artifact_id: str
+    original_version: str
+    remediated_version: str
+    base_version: str
+    cves: list[str]
+    depth: int
+    scope: str
+
+class ResolverSummary(BaseModel):
+    total_dependencies: int
+    matched: int
+    cves_found: int
+    unmatched: int
+
+class PomResolverResponse(BaseModel):
+    summary: ResolverSummary
+    matches: list[RemediationMatchResponse]
+    all_dependencies: list[ResolvedDependency]
+    remediated_pom: str
+    error: str | None = None
