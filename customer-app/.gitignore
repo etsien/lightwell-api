@@ -1,0 +1,29 @@
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+release.properties
+
+# IDE
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets and overrides (never commit credentials)
+.env
+*.local.xml
+settings.local.xml
+
+# Optional local TLS trust store
+.certs/
+
+# Generated OpenAPI sources (regenerate with openapi-generator:generate)
+target/generated-sources/
